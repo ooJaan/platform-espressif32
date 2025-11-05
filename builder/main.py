@@ -59,10 +59,30 @@ def _get_board_memory_type(env):
     )
 
 
-def _get_board_f_flash(env):
-    frequency = env.subst("$BOARD_F_FLASH")
+def _normalize_frequency(frequency):
     frequency = str(frequency).replace("L", "")
     return str(int(int(frequency) / 1000000)) + "m"
+
+
+def _get_board_f_flash(env):
+    frequency = env.subst("$BOARD_F_FLASH")
+    return _normalize_frequency(frequency)
+
+
+def _get_board_f_image(env):
+    board_config = env.BoardConfig()
+    if "build.f_image" in board_config:
+        return _normalize_frequency(board_config.get("build.f_image"))
+
+    return _get_board_f_flash(env)
+
+
+def _get_board_f_boot(env):
+    board_config = env.BoardConfig()
+    if "build.f_boot" in board_config:
+        return _normalize_frequency(board_config.get("build.f_boot"))
+
+    return _get_board_f_flash(env)
 
 
 def _get_board_flash_mode(env):
@@ -108,7 +128,9 @@ def _parse_partitions(env):
         return
 
     result = []
-    next_offset = 0
+    # The first offset is 0x9000 because partition table is flashed to 0x8000 and
+    # occupies an entire flash sector, which size is 0x1000
+    next_offset = 0x9000
     with open(partitions_csv) as fp:
         for line in fp.readlines():
             line = line.strip()
@@ -117,11 +139,14 @@ def _parse_partitions(env):
             tokens = [t.strip() for t in line.split(",")]
             if len(tokens) < 5:
                 continue
+
+            bound = 0x10000 if tokens[1] in ("0", "app") else 4
+            calculated_offset = (next_offset + bound - 1) & ~(bound - 1)
             partition = {
                 "name": tokens[0],
                 "type": tokens[1],
                 "subtype": tokens[2],
-                "offset": tokens[3] or next_offset,
+                "offset": tokens[3] or calculated_offset,
                 "size": tokens[4],
                 "flags": tokens[5] if len(tokens) > 5 else None
             }
@@ -130,21 +155,41 @@ def _parse_partitions(env):
                 partition["size"]
             )
 
-            bound = 0x10000 if partition["type"] in ("0", "app") else 4
-            next_offset = (next_offset + bound - 1) & ~(bound - 1)
-
     return result
 
 
 def _update_max_upload_size(env):
     if not env.get("PARTITIONS_TABLE_CSV"):
         return
-    sizes = [
-        _parse_size(p["size"]) for p in _parse_partitions(env)
+    sizes = {
+        p["subtype"]: _parse_size(p["size"]) for p in _parse_partitions(env)
         if p["type"] in ("0", "app")
-    ]
-    if sizes:
-        board.update("upload.maximum_size", max(sizes))
+    }
+
+    partitions = {p["name"]: p for p in _parse_partitions(env)}
+
+    # User-specified partition name has the highest priority
+    custom_app_partition_name = board.get("build.app_partition_name", "")
+    if custom_app_partition_name:
+        selected_partition = partitions.get(custom_app_partition_name, {})
+        if selected_partition:
+            board.update("upload.maximum_size", _parse_size(selected_partition["size"]))
+            return
+        else:
+            print(
+                "Warning! Selected partition `%s` is not available in the partition " \
+                "table! Default partition will be used!" % custom_app_partition_name
+            )
+
+    # Otherwise, one of the `factory` or `ota_0` partitions is used to determine
+    # available memory size. If both partitions are set, we should prefer the `factory`,
+    # but there are cases (e.g. Adafruit's `partitions-4MB-tinyuf2.csv`) that uses the
+    # `factory` partition for their UF2 bootloader. So let's use the first match
+    # https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/partition-tables.html#subtype
+    for p in partitions.values():
+        if p["type"] in ("0", "app") and p["subtype"] in ("factory", "ota_0"):
+            board.update("upload.maximum_size", _parse_size(p["size"]))
+            break
 
 
 def _to_unix_slashes(path):
@@ -159,7 +204,7 @@ def _to_unix_slashes(path):
 def fetch_fs_size(env):
     fs = None
     for p in _parse_partitions(env):
-        if p["type"] == "data" and p["subtype"] in ("spiffs", "fat"):
+        if p["type"] == "data" and p["subtype"] in ("spiffs", "fat", "littlefs"):
             fs = p
     if not fs:
         sys.stderr.write(
@@ -191,7 +236,7 @@ board = env.BoardConfig()
 mcu = board.get("build.mcu", "esp32")
 toolchain_arch = "xtensa-%s" % mcu
 filesystem = board.get("build.filesystem", "spiffs")
-if mcu == "esp32c3":
+if mcu in ("esp32c3", "esp32c6"):
     toolchain_arch = "riscv32-esp"
 
 if "INTEGRATION_EXTRA_DATA" not in env:
@@ -200,17 +245,28 @@ if "INTEGRATION_EXTRA_DATA" not in env:
 env.Replace(
     __get_board_boot_mode=_get_board_boot_mode,
     __get_board_f_flash=_get_board_f_flash,
+    __get_board_f_image=_get_board_f_image,
+    __get_board_f_boot=_get_board_f_boot,
     __get_board_flash_mode=_get_board_flash_mode,
     __get_board_memory_type=_get_board_memory_type,
 
-    AR="%s-elf-ar" % toolchain_arch,
+    AR="%s-elf-gcc-ar" % toolchain_arch,
     AS="%s-elf-as" % toolchain_arch,
     CC="%s-elf-gcc" % toolchain_arch,
     CXX="%s-elf-g++" % toolchain_arch,
-    GDB="%s-elf-gdb" % toolchain_arch,
+    GDB=join(
+        platform.get_package_dir(
+            "tool-riscv32-esp-elf-gdb"
+            if mcu in ("esp32c3", "esp32c6")
+            else "tool-xtensa-esp-elf-gdb"
+        )
+        or "",
+        "bin",
+        "%s-elf-gdb" % toolchain_arch,
+    ) if env.get("PIOFRAMEWORK") == ["espidf"] else "%s-elf-gdb" % toolchain_arch,
     OBJCOPY=join(
         platform.get_package_dir("tool-esptoolpy") or "", "esptool.py"),
-    RANLIB="%s-elf-ranlib" % toolchain_arch,
+    RANLIB="%s-elf-gcc-ranlib" % toolchain_arch,
     SIZETOOL="%s-elf-size" % toolchain_arch,
 
     ARFLAGS=["rc"],
@@ -259,10 +315,10 @@ env.Append(
     BUILDERS=dict(
         ElfToBin=Builder(
             action=env.VerboseAction(" ".join([
-                '"$PYTHONEXE" "$OBJCOPY"',
+                        '"$PYTHONEXE" "$OBJCOPY"',
                 "--chip", mcu, "elf2image",
                 "--flash_mode", "${__get_board_flash_mode(__env__)}",
-                "--flash_freq", "${__get_board_f_flash(__env__)}",
+                "--flash_freq", "${__get_board_f_image(__env__)}",
                 "--flash_size", board.get("upload.flash_size", "4MB"),
                 "-o", "$TARGET", "$SOURCES"
             ]), "Building $TARGET"),
@@ -306,6 +362,8 @@ if "nobuild" in COMMAND_LINE_TARGETS:
     if set(["uploadfs", "uploadfsota"]) & set(COMMAND_LINE_TARGETS):
         fetch_fs_size(env)
         target_firm = join("$BUILD_DIR", "${ESP32_FS_IMAGE_NAME}.bin")
+    if env.get("PIO_ESP32_SINGLE_BOOTLOADER_TARGET", False):
+        target_firm = join("$BUILD_DIR", "${ESP32_BOOTLOADER_IMAGE_NAME}.bin")
     else:
         target_firm = join("$BUILD_DIR", "${PROGNAME}.bin")
 else:
@@ -316,9 +374,25 @@ else:
         )
         env.NoCache(target_firm)
         AlwaysBuild(target_firm)
+    elif env.get("PIO_ESP32_SINGLE_BOOTLOADER_TARGET", False):
+        target_firm = join("$BUILD_DIR", "${ESP32_BOOTLOADER_IMAGE_NAME}.bin")
     else:
         target_firm = env.ElfToBin(
-            join("$BUILD_DIR", "${PROGNAME}"), target_elf)
+            join("$BUILD_DIR", "${PROGNAME}"), target_elf
+        )
+        if env.get("PIO_ESP32_SIGNATURE_REQUIRED", False) or env.get(
+            "PIO_ESP32_SECURE_BOOT_BUILD_SIGNED_BINARIES", False
+        ):
+            target_firm = env.SignBin(
+                join("$BUILD_DIR", "${PROGNAME}-signed"), target_firm
+            )
+        if env.get("PIO_ESP32_ENCRYPTION_REQUIRED", False):
+            target_firm = env.Clone(
+                FLASH_IMAGE_OFFSET="$ESP32_APP_OFFSET"
+            ).EncryptBin(
+                join("$BUILD_DIR", "${PROGNAME}-encrypted"), target_firm
+            )
+
         env.Depends(target_firm, "checkprogsize")
 
 env.AddPlatformTarget("buildfs", target_firm, target_firm, "Build Filesystem Image")
@@ -398,7 +472,7 @@ elif upload_protocol == "esptool":
             "--after", board.get("upload.after_reset", "hard_reset"),
             "write_flash", "-z",
             "--flash_mode", "${__get_board_flash_mode(__env__)}",
-            "--flash_freq", "${__get_board_f_flash(__env__)}",
+            "--flash_freq", "${__get_board_f_image(__env__)}",
             "--flash_size", board.get("upload.flash_size", "detect")
         ],
         UPLOADCMD='"$PYTHONEXE" "$UPLOADER" $UPLOADERFLAGS $ESP32_APP_OFFSET $SOURCE'
@@ -416,7 +490,7 @@ elif upload_protocol == "esptool":
                 "--after", board.get("upload.after_reset", "hard_reset"),
                 "write_flash", "-z",
                 "--flash_mode", "${__get_board_flash_mode(__env__)}",
-                "--flash_freq", "${__get_board_f_flash(__env__)}",
+                "--flash_freq", "${__get_board_f_image(__env__)}",
                 "--flash_size", board.get("upload.flash_size", "detect"),
                 "$FS_START"
             ],
@@ -429,31 +503,26 @@ elif upload_protocol == "esptool":
     ]
 
 
-elif upload_protocol == "mbctool":
+elif upload_protocol == "dfu":
+
+    hwids = board.get("build.hwids", [["0x2341", "0x0070"]])
+    vid = hwids[0][0]
+    pid = hwids[0][1]
+
+    upload_actions = [env.VerboseAction("$UPLOADCMD", "Uploading $SOURCE")]
+
     env.Replace(
         UPLOADER=join(
-            platform.get_package_dir("tool-mbctool") or "", "bin", "mbctool"),
+            platform.get_package_dir("tool-dfuutil-arduino") or "", "dfu-util"
+        ),
         UPLOADERFLAGS=[
-            "--device", "esp",
-            "--speed", "$UPLOAD_SPEED",
-            "--port", '"$UPLOAD_PORT"',
-            "--upload",
-            "0x1000", join(
-                platform.get_package_dir("framework-arduino-mbcwb"),
-                "tools", "sdk", "bin", "bootloader_qio_80m.bin"),
-            "0x8000", join("$BUILD_DIR", "partitions.bin"),
-            "0xe000", join(
-                platform.get_package_dir("framework-arduino-mbcwb"),
-                "tools", "partitions", "boot_app0.bin"),
-            "0x10000", join("$BUILD_DIR", "${PROGNAME}.bin"),
+            "-d",
+            ",".join(["%s:%s" % (hwid[0], hwid[1]) for hwid in hwids]),
+            "-Q",
+            "-D"
         ],
-        UPLOADCMD='"$UPLOADER" $UPLOADERFLAGS'
+        UPLOADCMD='"$UPLOADER" $UPLOADERFLAGS "$SOURCE"',
     )
-    upload_actions = [
-        env.VerboseAction(env.AutodetectUploadPort,
-                          "Looking for upload port..."),
-        env.VerboseAction("$UPLOADCMD", "Uploading $SOURCE")
-    ]
 
 
 elif upload_protocol in debug_tools:
@@ -511,6 +580,54 @@ env.AddPlatformTarget("uploadfs", target_firm, upload_actions, "Upload Filesyste
 env.AddPlatformTarget(
     "uploadfsota", target_firm, upload_actions, "Upload Filesystem Image OTA")
 
+if "espidf" in env.get("PIOFRAMEWORK"):
+
+    env.AddPlatformTarget(
+        "encrypt",
+        target_firm,
+        None,
+        "Encrypt Application Images"
+    )
+
+    env.AddPlatformTarget(
+        "sign",
+        target_firm,
+        None,
+        "Sign Application Images"
+    )
+
+    env.AddPlatformTarget(
+        "app",
+        target_firm,
+        None,
+        "Build Application"
+    )
+
+    env.AddPlatformTarget(
+        "bootloader",
+        target_firm,
+        None,
+        "Build Bootloader"
+    )
+
+    # Helper targets for better UX in IDE
+    configured_targets = []
+    for target_name in ("", "-app", "-bootloader"):
+        for action_name in ("", "-signed", "-encrypted", "-signed-encrypted"):
+            if not target_name and not action_name:
+                continue
+            env.AddPlatformTarget(
+                "__upload%s%s" % (action_name, target_name),
+                target_firm,
+                upload_actions,
+                "Upload%s %s"
+                % (
+                    action_name.replace("-", " ").title(),
+                    target_name.replace("-", "").title(),
+                ),
+            )
+
+
 #
 # Target: Erase Flash
 #
@@ -532,6 +649,12 @@ env.AddPlatformTarget(
 if any("-Wl,-T" in f for f in env.get("LINKFLAGS", [])):
     print("Warning! '-Wl,-T' option for specifying linker scripts is deprecated. "
           "Please use 'board_build.ldscript' option in your 'platformio.ini' file.")
+
+#
+# Override memory inspection behavior
+#
+
+env.SConscript("sizedata.py", exports="env")
 
 #
 # Default targets

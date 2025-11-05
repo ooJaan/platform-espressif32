@@ -18,7 +18,7 @@
     "type": "git",
     "url": "https://github.com/platformio/platform-espressif32.git"
   },
-  "version": "6.1.0",
+  "version": "6.12.0",
   "frameworks": {
     "arduino": {
       "package": "framework-arduinoespressif32",
@@ -26,74 +26,81 @@
     },
     "espidf": {
       "package": "framework-espidf",
-      "script": "builder/frameworks/espidf.py",
-      "description": "ESP-IDF is the official development framework for the ESP32 and ESP32-S Series SoCs.",
-      "homepage": "https://docs.espressif.com/projects/esp-idf/en/latest/esp32/",
-      "title": "Espressif IoT Development Framework"
+      "script": "builder/frameworks/espidf.py"
     }
   },
   "packages": {
     "toolchain-xtensa-esp32": {
       "type": "toolchain",
       "owner": "espressif",
-      "version": "8.4.0+2021r2-patch5",
-      "optionalVersions": ["11.2.0+2022r1"]
+      "version": "8.4.0+2021r2-patch5"
     },
     "toolchain-xtensa-esp32s2": {
       "type": "toolchain",
       "optional": true,
       "owner": "espressif",
-      "version": "8.4.0+2021r2-patch5",
-      "optionalVersions": ["11.2.0+2022r1"]
+      "version": "8.4.0+2021r2-patch5"
     },
      "toolchain-xtensa-esp32s3": {
       "type": "toolchain",
       "optional": true,
       "owner": "espressif",
-      "version": "8.4.0+2021r2-patch5",
-      "optionalVersions": ["11.2.0+2022r1"]
+      "version": "8.4.0+2021r2-patch5"
     },
     "toolchain-riscv32-esp": {
       "type": "toolchain",
       "optional": true,
       "owner": "espressif",
       "version": "8.4.0+2021r2-patch5",
-      "optionalVersions": ["11.2.0+2022r1"]
+      "optionalVersions": ["14.2.0+20241119"]
+    },
+    "toolchain-xtensa-esp-elf": {
+      "type": "toolchain",
+      "optional": true,
+      "owner": "platformio",
+      "version": "14.2.0+20241119"
     },
     "toolchain-esp32ulp": {
       "type": "toolchain",
       "optional": true,
       "owner": "platformio",
-      "version": "~1.23500.0"
+      "version": "~1.23800.0"
+    },
+    "tool-xtensa-esp-elf-gdb": {
+      "type": "debugger",
+      "optional": true,
+      "owner": "espressif",
+      "version": "~12.1.0"
+    },
+    "tool-riscv32-esp-elf-gdb": {
+      "type": "debugger",
+      "optional": true,
+      "owner": "espressif",
+      "version": "~12.1.0"
     },
     "framework-arduinoespressif32": {
       "type": "framework",
       "optional": true,
       "owner": "platformio",
-      "version": "~3.20007.0"
-    },
-    "framework-arduino-mbcwb": {
-      "type": "framework",
-      "optional": true,
-      "owner": "meteca",
-      "version": ">=2.1.1"
+      "version": "~3.20017.0"
     },
     "framework-espidf": {
       "type": "framework",
       "optional": true,
       "owner": "platformio",
-      "version": "~3.50001.0",
-      "optionalVersions": ["~3.40404.0"]
+      "version": "~3.50500.0",
+      "optionalVersions": ["~3.40407.0"]
     },
     "tool-esptoolpy": {
       "type": "uploader",
       "owner": "platformio",
-      "version": "~1.40501.0"
+      "version": "~2.40900.0"
     },
-    "tool-mbctool": {
+    "tool-dfuutil-arduino": {
+      "type": "uploader",
       "optional": true,
-      "owner": "meteca",
-      "version": ">=2.0.0"
+      "owner": "platformio",
+      "version": "~1.11.0"
     },
     "tool-openocd-esp32": {
       "type": "debugger",
@@ -122,7 +129,7 @@
     "tool-cmake": {
       "optional": true,
       "owner": "platformio",
-      "version": "~3.16.0"
+      "version": "~3.30.0"
     },
     "tool-ninja": {
       "optional": true,
@@ -138,6 +145,11 @@
       "optional": true,
       "owner": "platformio",
       "version": "~1.0.1"
+    },
+    "tool-esp-rom-elfs": {
+      "optional": true,
+      "owner": "platformio",
+      "version": "0.0.1+20241011"
     }
   }
 }
